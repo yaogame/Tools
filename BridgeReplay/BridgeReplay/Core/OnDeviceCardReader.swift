@@ -48,7 +48,8 @@ enum OnDeviceCardReader {
         var ranks = [Int?](repeating: nil, count: candidates.count)
         // 拼成一行一行交给 Vision，比一个字一个字读准得多；读不出的换灰度图再拼一次，最后再单张读。
         readInStrips(candidates.indices.map { (index: $0, image: candidates[$0].binary) }, into: &ranks)
-        readInStrips(candidates.indices.filter { ranks[$0] == nil }.map { (index: $0, image: candidates[$0].gray) }, into: &ranks)
+        let unread = candidates.indices.filter { ranks[$0] == nil }.map { (index: $0, image: candidates[$0].gray) }
+        readInStrips(unread, into: &ranks)
         for i in candidates.indices where ranks[i] == nil {
             ranks[i] = readRank(candidates[i].binary) ?? readRank(candidates[i].gray)
         }
