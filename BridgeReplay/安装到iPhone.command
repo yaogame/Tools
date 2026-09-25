@@ -1,7 +1,8 @@
 #!/bin/bash
 # 坐庄复盘：一键编译并安装到 iPhone。
-# 用法：iPhone 用数据线连上 Mac，在访达里双击本文件（被拦截时右键 → 打开）。
-# 也可以在终端运行：bash 安装到iPhone.command
+# 用法：iPhone 用数据线连上 Mac，在终端运行：bash 安装到iPhone.command
+# 从网上下载的 zip 解压后会被 macOS 拦截双击（“Apple could not verify…”），
+# 先运行一次：xattr -dr com.apple.quarantine <BridgeReplay 文件夹>，之后就能双击。
 #
 # 可选环境变量：
 #   TEAM_ID=XXXXXXXXXX   指定开发者 Team ID（10 位）

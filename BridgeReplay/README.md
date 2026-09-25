@@ -35,7 +35,15 @@
 1. iPhone 用数据线连上 Mac，解锁手机，点「信任此电脑」。
 2. 打开开发者模式：iPhone「设置 → 隐私与安全性 → 开发者模式」，打开后按提示重启手机。
 3. 在 Xcode →「Settings → Accounts」里登录 Apple ID（免费账号也可以）。
-4. 在访达里双击 `安装到iPhone.command`。如果被系统拦截，右键 →「打开」。
+4. 在「终端」里运行（把路径换成你解压的位置）：
+
+   ```bash
+   xattr -dr com.apple.quarantine ~/Downloads/BridgeReplay
+   bash ~/Downloads/BridgeReplay/安装到iPhone.command
+   ```
+
+   从网上下载的 zip 会被 macOS 加上「隔离」标记，所以直接双击会提示 “Apple could not verify…”。
+   第一行命令去掉这个标记，之后在访达里双击也能运行。用 git clone 下来的工程没有这个标记，可以直接双击。
 
 脚本会依次自动完成：找到手机、编译、签名、安装、打开 App。还会在 `build/BridgeReplay.ipa` 生成一个安装包。
 
