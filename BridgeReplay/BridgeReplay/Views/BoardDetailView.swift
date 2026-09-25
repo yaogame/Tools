@@ -6,6 +6,7 @@ struct BoardDetailView: View {
 
     @EnvironmentObject private var store: BoardStore
     @State private var editing: DealDraft?
+    @State private var savingExample = false
     @State private var robotLevel: RobotLevel = .club
     @State private var fromRestorePoint = true
     @AppStorage("fourColorDeck") private var fourColor = false
@@ -26,6 +27,7 @@ struct BoardDetailView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
                 Button("修改四手牌") { editing = DealDraft(board: board, photo: store.photo(for: board)) }
+                Button("保存为牌例") { savingExample = true }
             } header: {
                 Text("\(board.title) · \(board.dealer.name)发牌 · \(board.vulnerability.name)")
             }
@@ -76,8 +78,16 @@ struct BoardDetailView: View {
                             }
                         } icon: { Image(systemName: "square.grid.2x2.fill") }
                     }
+                    NavigationLink(value: Route.play(board.id, PlayLaunch(mode: .defense, robotLevel: .expert, contract: contract, startPlays: start, viewer: contract.openingLeader))) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("防守练习").font(.body.weight(.semibold))
+                                Text("你坐\(contract.openingLeader.name)家首攻，庄家和同伴由机器人打").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: "shield.lefthalf.filled") }
+                    }
                 } header: {
-                    Text("开始坐庄")
+                    Text("开始练习")
                 } footer: {
                     Text("两种方式都会在每一墩后显示双明手下你最终能拿到的墩数。「最强」机器人按双明手最优防守。")
                 }
@@ -96,7 +106,7 @@ struct BoardDetailView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text("\(attempt.declarerTricks) 墩")
+                                Text("\(attempt.viewerIsDeclarerSide ? "庄" : "防") \(attempt.viewerTricks) 墩")
                                     .font(.system(.title3, design: .serif).weight(.bold))
                                     .foregroundStyle(Theme.felt)
                             }
@@ -107,6 +117,9 @@ struct BoardDetailView: View {
         }
         .navigationTitle(board.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $savingExample) {
+            SaveExampleSheet(board: board, contract: board.contract, plays: [], viewer: nil)
+        }
         .sheet(item: $editing) { draft in
             DealEditorView(draft: draft) { updated, _ in
                 var updated = updated

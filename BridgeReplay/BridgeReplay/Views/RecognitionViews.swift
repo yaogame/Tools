@@ -107,42 +107,26 @@ struct OrientationConfirmView: View {
     }
 }
 
-/// 设置：照片识别用的 API Key、牌面显示。
+/// 设置。
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var key = APIKeyStore.load() ?? ""
-    @State private var hasSavedKey = APIKeyStore.load() != nil
     @AppStorage("fourColorDeck") private var fourColor = false
+    @AppStorage("showCardTricks") private var showCardTricks = true
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    SecureField("sk-ant-…", text: $key)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                    Button("保存") {
-                        APIKeyStore.save(key)
-                        hasSavedKey = APIKeyStore.load() != nil
-                        dismiss()
-                    }
-                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if hasSavedKey {
-                        Button("删除已保存的 Key", role: .destructive) {
-                            APIKeyStore.delete()
-                            key = ""
-                            hasSavedKey = false
-                        }
-                    }
-                } header: {
-                    Text("照片识别 · Anthropic API Key")
-                } footer: {
-                    Text("识别时，照片会发送到 Anthropic 的 Claude API（\(ClaudeCardReader.model)）读取牌面，按用量计费，每张照片大约 0.1 美元。Key 只保存在这台 iPhone 的钥匙串里。可以在 console.anthropic.com 创建 Key。")
-                }
-
                 Section("牌面") {
                     Toggle("四色牌（方块橙色、梅花绿色）", isOn: $fourColor)
+                    Toggle("出牌时在每张牌上显示双明手墩数", isOn: $showCardTricks)
+                }
+                Section {
+                    LabeledContent("照片识别", value: "在手机上完成，不联网")
+                    LabeledContent("双明手计算", value: "DDS 2.9.0")
+                } header: {
+                    Text("关于")
+                } footer: {
+                    Text("照片识别看牌角的花色和点数；看不清的牌按排除法补上，识别后都可以手动修改。")
                 }
             }
             .navigationTitle("设置")

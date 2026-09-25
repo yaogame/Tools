@@ -1,18 +1,23 @@
 import SwiftUI
 
-/// 线上坐庄的牌桌。庄家在下，明手在上，左边是庄家的下家，右边是上家。
+/// 牌桌。你这一方在下方：坐庄时是庄家，防守练习时是你防守的那一家。
 struct PlayView: View {
     @EnvironmentObject private var store: BoardStore
+    @Environment(\.navigator) private var navigator
     @StateObject private var model: PlayViewModel
-    @State private var showDefenders = false
+    @State private var showAll = false
     @State private var savedRestoreNote = false
+    @State private var showSaveExample = false
     @AppStorage("showCardTricks") private var showCardTricks = true
     @AppStorage("fourColorDeck") private var fourColor = false
 
     private let board: PracticeBoard
+    /// 分级练习时"下一副"去的地方。
+    private let next: Route?
 
-    init(board: PracticeBoard, launch: PlayLaunch) {
+    init(board: PracticeBoard, launch: PlayLaunch, next: Route? = nil) {
         self.board = board
+        self.next = next
         _model = StateObject(wrappedValue: PlayViewModel(board: board, launch: launch))
     }
 
@@ -20,13 +25,13 @@ struct PlayView: View {
         VStack(spacing: 6) {
             header
             seatTag(model.topSeat)
-            HandFan(seat: model.topSeat, model: model, visible: model.isVisible(model.topSeat, showDefenders: showDefenders), showCardTricks: showCardTricks)
+            HandFan(seat: model.topSeat, model: model, visible: model.isVisible(model.topSeat, showAll: showAll), showCardTricks: showCardTricks)
             HStack(alignment: .center, spacing: 4) {
-                SideHand(seat: model.leftSeat, model: model, visible: model.isVisible(model.leftSeat, showDefenders: showDefenders), showCardTricks: showCardTricks)
+                SideHand(seat: model.leftSeat, model: model, visible: model.isVisible(model.leftSeat, showAll: showAll), showCardTricks: showCardTricks)
                     .frame(width: 100)
                 TrickTable(model: model)
                     .frame(maxWidth: .infinity)
-                SideHand(seat: model.rightSeat, model: model, visible: model.isVisible(model.rightSeat, showDefenders: showDefenders), showCardTricks: showCardTricks)
+                SideHand(seat: model.rightSeat, model: model, visible: model.isVisible(model.rightSeat, showAll: showAll), showCardTricks: showCardTricks)
                     .frame(width: 100)
             }
             .frame(maxHeight: .infinity)
@@ -64,6 +69,9 @@ struct PlayView: View {
         } message: {
             Text("下次可以从这 \(model.state.plays.count) 张牌之后接着打，也可以切换到「机器人防守」现在就接着打。")
         }
+        .sheet(isPresented: $showSaveExample) {
+            SaveExampleSheet(board: board, contract: model.contract, plays: model.state.plays, viewer: model.viewer)
+        }
         .onAppear {
             model.onFinish = { [boardID = model.boardID] attempt in
                 store.update(boardID) { $0.attempts.append(attempt) }
@@ -77,10 +85,11 @@ struct PlayView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(model.mode.name)" + (model.mode == .robotDefense ? " · \(model.robotLevel.name)" : ""))
+                Text(model.mode.name + (model.mode == .allFour ? "" : " · 防守机器人\(model.robotLevel.name)"))
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.8))
-                Text("需要 \(model.contract.target) 墩 · \(board.vulnerability.name)")
+                Text((model.viewerIsDeclarerSide ? "完成定约需 \(model.contract.target) 墩" : "打宕需防守 \(model.viewerGoal) 墩")
+                     + " · \(board.vulnerability.name)")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.8))
             }
@@ -101,12 +110,12 @@ struct PlayView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// 双明手下庄家最终能拿到的墩数。
+    /// 双明手下你这一方最终能拿到的墩数。
     private var ddBox: some View {
-        let value = model.state.isFinished ? model.state.declarerTricks : model.dd?.declarerTricks
-        let ok = (value ?? 0) >= model.contract.target
+        let value = model.viewerDD
+        let ok = (value ?? 0) >= model.viewerGoal
         return VStack(spacing: 0) {
-            Text("可得").font(.caption2).foregroundStyle(Theme.ink.opacity(0.7))
+            Text(model.viewerIsDeclarerSide ? "可得" : "防守可得").font(.caption2).foregroundStyle(Theme.ink.opacity(0.7))
             if let value {
                 Text("\(value)").font(.system(.title3, design: .serif).weight(.bold))
                     .foregroundStyle(ok ? Theme.felt : Theme.red)
@@ -114,11 +123,11 @@ struct PlayView: View {
                 ProgressView().controlSize(.small).frame(height: 24)
             }
         }
-        .frame(minWidth: 44)
+        .frame(minWidth: 48)
         .padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.ivory))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(value.map { "双明手可得 \($0) 墩" } ?? "正在计算双明手")
+        .accessibilityLabel(value.map { "双明手下\(model.viewerSideName)可得 \($0) 墩" } ?? "正在计算双明手")
     }
 
     private func seatTag(_ seat: Seat) -> some View {
@@ -140,9 +149,9 @@ struct PlayView: View {
         Spacer()
         Button { model.restart() } label: { Label("重来", systemImage: "arrow.counterclockwise") }
         Spacer()
-        if model.mode == .robotDefense {
-            Button { showDefenders.toggle() } label: {
-                Label(showDefenders ? "盖上防守牌" : "亮出防守牌", systemImage: showDefenders ? "eye.slash" : "eye")
+        if model.mode != .allFour {
+            Button { showAll.toggle() } label: {
+                Label(showAll ? "盖上暗牌" : "亮出全部牌", systemImage: showAll ? "eye.slash" : "eye")
             }
             Spacer()
         }
@@ -150,23 +159,48 @@ struct PlayView: View {
             .toggleStyle(.button)
     }
 
+    private var availableModes: [PracticeMode] {
+        model.viewerIsDeclarerSide ? [.robotDefense, .allFour] : [.defense, .allFour]
+    }
+
+    /// 可以改成手工出牌的座位：当前由机器人出牌的，以及已经改成手工的。
+    private var manualCandidates: [Seat] {
+        Seat.allCases.filter { model.robotSeats.contains($0) || model.manualSeats.contains($0) }
+    }
+
     private var moreMenu: some View {
         Menu {
             Picker("练习方式", selection: $model.mode) {
-                ForEach(PracticeMode.allCases) { Text($0.name).tag($0) }
+                ForEach(availableModes) { Text($0.name).tag($0) }
             }
-            if model.mode == .robotDefense {
-                Picker("机器人水平", selection: $model.robotLevel) {
+            if !manualCandidates.isEmpty {
+                Section("手工出牌") {
+                    ForEach(manualCandidates) { seat in
+                        Toggle("\(seat.name)家由我出牌", isOn: Binding(
+                            get: { model.manualSeats.contains(seat) },
+                            set: { _ in model.toggleManual(seat) }))
+                    }
+                }
+            }
+            if model.mode != .allFour {
+                Picker("防守机器人水平", selection: $model.robotLevel) {
                     ForEach(RobotLevel.allCases) { Text($0.name).tag($0) }
                 }
             }
             Divider()
             Button {
-                let plays = model.state.plays
-                store.update(model.boardID) { $0.restorePlays = plays }
-                savedRestoreNote = true
+                showSaveExample = true
             } label: {
-                Label("设为恢复点", systemImage: "bookmark")
+                Label("保存为牌例", systemImage: "star")
+            }
+            if board.practiceID == nil {
+                Button {
+                    let plays = model.state.plays
+                    store.update(model.boardID) { $0.restorePlays = plays }
+                    savedRestoreNote = true
+                } label: {
+                    Label("设为恢复点", systemImage: "bookmark")
+                }
             }
             Toggle("四色牌", isOn: $fourColor)
         } label: {
@@ -181,27 +215,40 @@ struct PlayView: View {
         ZStack {
             Color.black.opacity(0.45).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
-                Text("本副结束").font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Text("本副结束").font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    Label(model.viewerSucceeded ? (model.viewerIsDeclarerSide ? "完成定约" : "打宕定约") : "没有成功",
+                          systemImage: model.viewerSucceeded ? "checkmark.seal.fill" : "xmark.seal")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(model.viewerSucceeded ? Theme.felt : Theme.red)
+                }
                 Text(model.resultTitle)
                     .font(.system(.title, design: .serif).weight(.bold))
                     .foregroundStyle(Theme.felt)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("庄家拿到 \(attempt.declarerTricks) 墩，得分 \(model.score > 0 ? "+" : "")\(model.score)")
-                    if let best = model.ddAtTrickStart[0] {
-                        Text("双明手最优：\(best) 墩")
+                    Text(model.resultLine)
+                    if let best = model.viewerValue(atTrickStart: 0) {
+                        Text("双明手最优：\(model.viewerSideName) \(best) 墩")
                     }
-                    if let offline = board.offlineTricks {
+                    if model.viewerIsDeclarerSide, let offline = board.offlineTricks {
                         Text("线下：\(offline) 墩（\(model.contract.resultText(declarerTricks: offline))）")
                     }
                 }
                 .font(.subheadline)
                 HStack(spacing: 10) {
                     Button { model.restart() } label: {
-                        Text("再坐一次").frame(maxWidth: .infinity, minHeight: 44)
+                        Text("再打一次").frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.bordered)
                     NavigationLink(value: Route.review(model.boardID, attempt.id)) {
                         Text("看复盘").frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if let next {
+                    Button { navigator.replaceTop(next) } label: {
+                        Text("下一副").frame(maxWidth: .infinity, minHeight: 44)
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -393,11 +440,11 @@ private struct TrickHistoryStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("每墩后可得")
+                Text("每墩后\(model.viewerSideName)可得")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.75))
                 Spacer()
-                if let start = model.ddAtTrickStart[0] {
+                if let start = model.viewerValue(atTrickStart: 0) {
                     Text("开局双明手 \(start) 墩")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.75))
@@ -411,17 +458,17 @@ private struct TrickHistoryStrip: View {
         }
     }
 
-    /// 第 n 墩：谁赢了这墩，以及打完这墩后庄家方最终能拿的墩数。
+    /// 第 n 墩：谁赢了这墩，以及打完这墩后你这一方最终能拿的墩数。
     private func cell(_ n: Int) -> some View {
-        let trick = n <= model.state.completedTricks.count ? model.state.completedTricks[n - 1] : nil
-        let declarerWon = trick.map { $0.winner.isSameSide(as: model.declarer) } ?? false
-        let value = trick == nil ? nil : model.ddAtTrickStart[n]
-        let previous = model.ddAtTrickStart[n - 1]
+        let trick: Trick? = n <= model.state.completedTricks.count ? model.state.completedTricks[n - 1] : nil
+        let viewerWon = trick.map { $0.winner.isSameSide(as: model.viewer) } ?? false
+        let value = trick == nil ? nil : model.viewerValue(atTrickStart: n)
+        let previous = model.viewerValue(atTrickStart: n - 1)
         var change = 0
         if let value, let previous { change = value - previous }
-        let label = accessibilityText(n, played: trick != nil, declarerWon: declarerWon, value: value, change: change)
-        let textColor: Color = trick == nil ? Color.white.opacity(0.4) : (declarerWon ? Theme.ink : Color.white)
-        let fill: Color = trick == nil ? Color.white.opacity(0.08) : (declarerWon ? Theme.brass : Color.white.opacity(0.28))
+        let label = accessibilityText(n, played: trick != nil, viewerWon: viewerWon, value: value, change: change)
+        let textColor: Color = trick == nil ? Color.white.opacity(0.4) : (viewerWon ? Theme.ink : Color.white)
+        let fill: Color = trick == nil ? Color.white.opacity(0.08) : (viewerWon ? Theme.brass : Color.white.opacity(0.28))
         let dot: Color = change < 0 ? Theme.red : (change > 0 ? Theme.brass : Color.clear)
         let text: String = value.map { "\($0)" } ?? (trick == nil ? "\(n)" : "·")
         return VStack(spacing: 1) {
@@ -438,9 +485,9 @@ private struct TrickHistoryStrip: View {
         .accessibilityLabel(label)
     }
 
-    private func accessibilityText(_ n: Int, played: Bool, declarerWon: Bool, value: Int?, change: Int) -> String {
+    private func accessibilityText(_ n: Int, played: Bool, viewerWon: Bool, value: Int?, change: Int) -> String {
         guard played else { return "第 \(n) 墩未打" }
-        var text = "第 \(n) 墩" + (declarerWon ? "庄家赢" : "防守赢")
+        var text = "第 \(n) 墩" + (viewerWon ? "你方赢" : "对方赢")
         if let value { text += "，之后可得 \(value) 墩" }
         if change < 0 { text += "，丢了 \(-change) 墩" }
         if change > 0 { text += "，对方送了 \(change) 墩" }

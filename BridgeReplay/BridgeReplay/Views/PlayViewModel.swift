@@ -7,10 +7,15 @@ final class PlayViewModel: ObservableObject {
     let contract: Contract
     let vulnerable: Bool
     let startPlays: [Play]
+    /// 坐在下方的一家：坐庄时是庄家，防守练习时是你防守的那一家。
+    let viewer: Seat
+    let practiceID: String?
 
     @Published private(set) var state: PlayState
     @Published var mode: PracticeMode { didSet { if mode != oldValue { refresh() } } }
     @Published var robotLevel: RobotLevel
+    /// 本来由机器人出牌、被改成由你手工出牌的座位。
+    @Published var manualSeats: Set<Seat> = [] { didSet { if manualSeats != oldValue { refresh() } } }
     /// 当前局面的双明手结果（轮到出牌那家每张牌的墩数）。
     @Published private(set) var dd: DDPosition?
     @Published private(set) var ddLoading = false
@@ -23,6 +28,7 @@ final class PlayViewModel: ObservableObject {
     private var robotTask: Task<Void, Never>?
     private var ddTask: Task<Void, Never>?
     private let engine = DoubleDummyEngine.shared
+    private var startedHistory = false
 
     init(board: PracticeBoard, launch: PlayLaunch) {
         boardID = board.id
@@ -30,6 +36,8 @@ final class PlayViewModel: ObservableObject {
         contract = launch.contract
         vulnerable = board.vulnerability.isVulnerable(launch.contract.declarer)
         startPlays = launch.startPlays
+        viewer = launch.viewer ?? launch.contract.declarer
+        practiceID = launch.practiceID
         mode = launch.mode
         robotLevel = launch.robotLevel
         state = PlayState(deal: board.deal, contract: launch.contract, plays: launch.startPlays)
@@ -38,26 +46,44 @@ final class PlayViewModel: ObservableObject {
     // MARK: - 座位
 
     var declarer: Seat { contract.declarer }
-    var bottomSeat: Seat { declarer }
-    var topSeat: Seat { declarer.partner }
-    var leftSeat: Seat { declarer.next }
-    var rightSeat: Seat { declarer.previous }
+    var bottomSeat: Seat { viewer }
+    var topSeat: Seat { viewer.partner }
+    var leftSeat: Seat { viewer.next }
+    var rightSeat: Seat { viewer.previous }
+    var viewerIsDeclarerSide: Bool { viewer.isSameSide(as: declarer) }
 
-    func isHumanControlled(_ seat: Seat) -> Bool {
-        mode == .allFour || seat.isSameSide(as: declarer)
+    /// 在当前练习方式下，默认由机器人出牌的座位。
+    var robotSeats: [Seat] {
+        Seat.allCases.filter { seat in
+            switch mode {
+            case .allFour: return false
+            case .robotDefense: return !seat.isSameSide(as: declarer)
+            case .defense: return seat != viewer
+            }
+        }
     }
 
-    func isVisible(_ seat: Seat, showDefenders: Bool) -> Bool {
-        if mode == .allFour || state.isFinished { return true }
-        if seat == declarer { return true }
+    func isHumanControlled(_ seat: Seat) -> Bool {
+        manualSeats.contains(seat) || !robotSeats.contains(seat)
+    }
+
+    func isVisible(_ seat: Seat, showAll: Bool) -> Bool {
+        if mode == .allFour || state.isFinished || showAll { return true }
+        if seat == viewer || manualSeats.contains(seat) { return true }
         if seat == contract.dummy { return !state.plays.isEmpty }
-        return showDefenders
+        return mode == .robotDefense && seat == declarer
     }
 
     func role(of seat: Seat) -> String {
-        if seat == declarer { return "庄家" }
-        if seat == contract.dummy { return "明手" }
-        return mode == .robotDefense ? "机器人" : "防守"
+        let base: String
+        if seat == declarer { base = "庄家" } else if seat == contract.dummy { base = "明手" } else { base = "防守" }
+        if mode == .allFour { return base }
+        if seat == viewer { return base + "·你" }
+        return isHumanControlled(seat) ? base + "·手工" : base + "·机器人"
+    }
+
+    func toggleManual(_ seat: Seat) {
+        if manualSeats.contains(seat) { manualSeats.remove(seat) } else { manualSeats.insert(seat) }
     }
 
     // MARK: - 出牌
@@ -75,8 +101,8 @@ final class PlayViewModel: ObservableObject {
     func undo() {
         robotTask?.cancel()
         var plays = state.plays
-        guard plays.count > 0 else { return }
-        if mode == .robotDefense {
+        guard !plays.isEmpty else { return }
+        if mode != .allFour {
             while let last = plays.last, !isHumanControlled(last.seat) { plays.removeLast() }
         }
         if !plays.isEmpty { plays.removeLast() }
@@ -91,11 +117,6 @@ final class PlayViewModel: ObservableObject {
         reset(to: startPlays)
     }
 
-    /// 从第 n 墩开始重打（保留前面的出牌）。
-    func restart(fromTrick n: Int) {
-        reset(to: PlayState.prefix(state.plays, beforeTrick: n))
-    }
-
     private func reset(to plays: [Play]) {
         robotTask?.cancel()
         finishedAttempt = nil
@@ -105,8 +126,6 @@ final class PlayViewModel: ObservableObject {
         refresh()
     }
 
-    private var startedHistory = false
-
     func start() {
         if dd == nil && !ddLoading { refresh() }
         if !startedHistory {
@@ -115,10 +134,9 @@ final class PlayViewModel: ObservableObject {
         }
     }
 
-    /// 从恢复点开始时，补算前面几墩结束时的双明手墩数。
+    /// 补算开局以及恢复点之前每墩结束时的双明手墩数。
     private func fillStartHistory() {
         let completed = PlayState(deal: deal, contract: contract, plays: startPlays).completedTricks.count
-        guard completed > 0 || !startPlays.isEmpty else { return }
         let deal = self.deal, contract = self.contract, plays = startPlays
         Task { [weak self] in
             for k in 0...completed {
@@ -145,7 +163,9 @@ final class PlayViewModel: ObservableObject {
                                       contract: contract,
                                       startPlayCount: startPlays.count,
                                       plays: state.plays,
-                                      declarerTricks: state.declarerTricks)
+                                      declarerTricks: state.declarerTricks,
+                                      viewer: viewer,
+                                      practiceID: practiceID)
                 finishedAttempt = attempt
                 onFinish?(attempt)
             }
@@ -170,7 +190,8 @@ final class PlayViewModel: ObservableObject {
     private func scheduleRobotIfNeeded(with position: DDPosition?) {
         guard let seat = state.turn, !isHumanControlled(seat) else { return }
         let snapshot = state
-        let level = robotLevel
+        // 替庄家出牌的机器人总是按双明手最优打；防守机器人按设置的水平。
+        let level: RobotLevel = seat.isSameSide(as: declarer) ? .expert : robotLevel
         robotTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 650_000_000)
             guard let self, !Task.isCancelled, snapshot.plays == self.state.plays else { return }
@@ -193,18 +214,39 @@ final class PlayViewModel: ObservableObject {
         }[0]
     }
 
-    // MARK: - 展示用
+    // MARK: - 以你这一方的角度显示
+
+    /// 把"庄家方最终墩数"换成某一方的最终墩数。
+    func sideTotal(_ declarerTotal: Int, for seat: Seat) -> Int {
+        seat.isSameSide(as: declarer) ? declarerTotal : 13 - declarerTotal
+    }
+
+    var viewerSideName: String { viewerIsDeclarerSide ? "庄家" : "防守" }
+    var viewerTricks: Int { viewerIsDeclarerSide ? state.declarerTricks : state.defenderTricks }
+    /// 你这一方的目标墩数：坐庄要完成定约，防守要打宕。
+    var viewerGoal: Int { viewerIsDeclarerSide ? contract.target : 14 - contract.target }
+
+    /// 双明手下你这一方最终能拿到的墩数。
+    var viewerDD: Int? {
+        if state.isFinished { return viewerTricks }
+        return dd.map { sideTotal($0.declarerTricks, for: viewer) }
+    }
+
+    func viewerValue(atTrickStart k: Int) -> Int? {
+        ddAtTrickStart[k].map { sideTotal($0, for: viewer) }
+    }
+
+    /// 出这张牌后，出牌这一方最终能拿到的墩数。
+    func ddValue(for card: Card, seat: Seat) -> Int? {
+        guard let dd, dd.mover == seat, let value = dd.values[card] else { return nil }
+        return sideTotal(value, for: seat)
+    }
 
     /// 桌面中间显示的牌：当前这墩，或者刚结束的上一墩。
     var displayedTrick: (plays: [Play], winner: Seat?) {
         if !state.currentTrick.isEmpty { return (state.currentTrick, nil) }
         if let last = state.lastTrick { return (last.plays, last.winner) }
         return ([], nil)
-    }
-
-    func ddValue(for card: Card, seat: Seat) -> Int? {
-        guard let dd, dd.mover == seat else { return nil }
-        return dd.values[card]
     }
 
     var statusText: String {
@@ -223,5 +265,22 @@ final class PlayViewModel: ObservableObject {
         "\(contract.label) \(declarer.name)家 " + contract.resultText(declarerTricks: state.declarerTricks)
     }
 
-    var score: Int { contract.score(declarerTricks: state.declarerTricks, vulnerable: vulnerable) }
+    /// 你这一方的得分。
+    var viewerScore: Int {
+        let score = contract.score(declarerTricks: state.declarerTricks, vulnerable: vulnerable)
+        return viewerIsDeclarerSide ? score : -score
+    }
+
+    var resultLine: String {
+        let score = viewerScore
+        let signed = (score > 0 ? "+" : "") + "\(score)"
+        if viewerIsDeclarerSide {
+            return "庄家拿到 \(state.declarerTricks) 墩，得分 \(signed)"
+        }
+        let beaten = state.declarerTricks < contract.target
+        return "防守拿到 \(state.defenderTricks) 墩，" + (beaten ? "打宕了定约" : "没能打宕") + "，得分 \(signed)"
+    }
+
+    /// 这一副算不算成功：坐庄完成定约，或防守打宕定约。
+    var viewerSucceeded: Bool { viewerTricks >= viewerGoal }
 }

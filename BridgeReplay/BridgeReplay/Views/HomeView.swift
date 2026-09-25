@@ -10,7 +10,7 @@ struct DealDraft: Identifiable {
 
 struct HomeView: View {
     @EnvironmentObject private var store: BoardStore
-    @State private var path: [Route] = []
+    @Environment(\.navigator) private var navigator
     @State private var draft: DealDraft?
     @State private var showCamera = false
     @State private var showPaste = false
@@ -18,8 +18,7 @@ struct HomeView: View {
     @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
-        NavigationStack(path: $path) {
-            List {
+        List {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("线下没打成的那副牌，拍下来，到线上再坐一次庄。")
@@ -73,19 +72,6 @@ struct HomeView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
-            .navigationDestination(for: Route.self) { route in
-                switch route {
-                case .board(let id):
-                    BoardDetailView(boardID: id)
-                case .play(let id, let launch):
-                    if let board = store.board(id) {
-                        PlayView(board: board, launch: launch)
-                    }
-                case .review(let id, let attemptID):
-                    ReviewView(boardID: id, attemptID: attemptID)
-                }
-            }
-        }
         .sheet(item: $draft) { draft in
             DealEditorView(draft: draft) { board, photo in
                 var board = board
@@ -93,7 +79,7 @@ struct HomeView: View {
                     board.photoFileName = store.savePhoto(photo)
                 }
                 store.save(board)
-                path.append(.board(board.id))
+                navigator.push(.board(board.id))
             }
         }
         .fullScreenCover(isPresented: $showCamera) {

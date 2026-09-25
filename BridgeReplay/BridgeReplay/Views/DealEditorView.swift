@@ -9,10 +9,8 @@ struct DealEditorView: View {
     @State private var photo: UIImage?
     @State private var seat: Seat = .north
     @State private var showPhoto = false
-    @State private var showSettings = false
     @State private var recognizing = false
     @State private var recognitionError: String?
-    @State private var needsAPIKey = false
     @State private var recognitionNote: String?
     @State private var pending: PendingRecognition?
     @State private var autoStarted = false
@@ -107,13 +105,9 @@ struct DealEditorView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-            }
             .task {
-                // 有照片、有 Key、还没录入任何牌时，自动开始识别。
-                guard !autoStarted, photo != nil, APIKeyStore.load() != nil,
-                      board.deal.hands.allSatisfy({ $0.isEmpty }) else { return }
+                // 有照片、还没录入任何牌时，自动开始识别。
+                guard !autoStarted, photo != nil, board.deal.hands.allSatisfy({ $0.isEmpty }) else { return }
                 autoStarted = true
                 startRecognition()
             }
@@ -127,7 +121,7 @@ struct DealEditorView: View {
             if recognizing {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("正在识别照片里的牌，大约需要半分钟…")
+                    Text("正在识别照片里的牌，大约需要几秒…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -146,10 +140,6 @@ struct DealEditorView: View {
                 Text(recognitionError)
                     .font(.footnote)
                     .foregroundStyle(Theme.red)
-                if needsAPIKey {
-                    Button("去设置 API Key") { showSettings = true }
-                        .font(.footnote.weight(.semibold))
-                }
             }
             if let recognitionNote {
                 Text(recognitionNote)
@@ -161,23 +151,18 @@ struct DealEditorView: View {
 
     private func startRecognition() {
         guard let photo else { return }
-        guard let key = APIKeyStore.load() else {
-            recognitionError = RecognitionError.missingAPIKey.localizedDescription
-            needsAPIKey = true
-            return
-        }
         recognizing = true
         recognitionError = nil
-        needsAPIKey = false
         Task {
             do {
-                let result = try await ClaudeCardReader(apiKey: key).read(photo)
-                pending = PendingRecognition(result: result)
+                let result = try await OnDeviceCardReader.read(photo)
+                if result.hands.values.allSatisfy({ $0.isEmpty }) {
+                    recognitionError = RecognitionError.noCards.localizedDescription
+                } else {
+                    pending = PendingRecognition(result: result)
+                }
             } catch {
                 recognitionError = error.localizedDescription
-                if let recognition = error as? RecognitionError, case .http(401, _) = recognition {
-                    needsAPIKey = true
-                }
             }
             recognizing = false
         }

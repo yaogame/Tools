@@ -21,17 +21,18 @@ struct ReviewView: View {
     private func content(_ board: PracticeBoard, _ attempt: Attempt) -> some View {
         let contract = attempt.contract
         let vulnerable = board.vulnerability.isVulnerable(contract.declarer)
+        let side = attempt.viewerIsDeclarerSide ? "庄家" : "防守"
         return List {
             Section {
                 HStack(spacing: 10) {
-                    summaryTile(title: "这次线上", tricks: attempt.declarerTricks, contract: contract, vulnerable: vulnerable, prominent: false)
+                    summaryTile(title: "这次 · \(side)", declarerTricks: attempt.declarerTricks, attempt: attempt, vulnerable: vulnerable, prominent: false)
                     if let best = model.review?.declarerTricksAtTrickStart[0] {
-                        summaryTile(title: "双明手最优", tricks: best, contract: contract, vulnerable: vulnerable, prominent: true)
+                        summaryTile(title: "双明手最优", declarerTricks: best, attempt: attempt, vulnerable: vulnerable, prominent: true)
                     }
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
-                if let offline = board.offlineTricks {
+                if attempt.viewerIsDeclarerSide, let offline = board.offlineTricks {
                     HStack {
                         Text("线下")
                         Spacer()
@@ -45,9 +46,9 @@ struct ReviewView: View {
 
             if let review = model.review {
                 Section {
-                    trend(review)
+                    trend(review, attempt: attempt)
                 } header: {
-                    Text("每墩后双明手可得")
+                    Text("每墩后双明手\(side)可得")
                 } footer: {
                     Text("格子里是打完这一墩后，双方都按最优打时你最终能拿到的墩数。红点表示这一墩里丢了墩。")
                 }
@@ -72,12 +73,16 @@ struct ReviewView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func summaryTile(title: String, tricks: Int, contract: Contract, vulnerable: Bool, prominent: Bool) -> some View {
-        let score = contract.score(declarerTricks: tricks, vulnerable: vulnerable)
+    /// 以你这一方的角度显示墩数和得分。
+    private func summaryTile(title: String, declarerTricks: Int, attempt: Attempt, vulnerable: Bool, prominent: Bool) -> some View {
+        let contract = attempt.contract
+        let declarerScore = contract.score(declarerTricks: declarerTricks, vulnerable: vulnerable)
+        let score = attempt.viewerIsDeclarerSide ? declarerScore : -declarerScore
+        let tricks = attempt.viewerIsDeclarerSide ? declarerTricks : 13 - declarerTricks
         return VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).opacity(0.8)
             Text("\(tricks) 墩").font(.system(.title, design: .serif).weight(.bold))
-            Text("\(contract.resultText(declarerTricks: tricks)) · \(score > 0 ? "+" : "")\(score)").font(.footnote)
+            Text("\(contract.resultText(declarerTricks: declarerTricks)) · \(score > 0 ? "+" : "")\(score)").font(.footnote)
         }
         .foregroundStyle(prominent ? Color.white : Theme.ink)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -85,11 +90,14 @@ struct ReviewView: View {
         .background(RoundedRectangle(cornerRadius: 16).fill(prominent ? Theme.felt : Color.white))
     }
 
-    private func trend(_ review: PlayReview) -> some View {
-        HStack(spacing: 3) {
+    private func trend(_ review: PlayReview, attempt: Attempt) -> some View {
+        let convert: (Int?) -> Int? = { value in
+            value.map { attempt.viewerIsDeclarerSide ? $0 : 13 - $0 }
+        }
+        return HStack(spacing: 3) {
             ForEach(1...13, id: \.self) { n in
-                let value = review.declarerTricksAtTrickStart[n]
-                let previous = review.declarerTricksAtTrickStart[n - 1]
+                let value = convert(review.declarerTricksAtTrickStart[n])
+                let previous = convert(review.declarerTricksAtTrickStart[n - 1])
                 let lost = value != nil && previous != nil && value! < previous!
                 VStack(spacing: 2) {
                     Text(value.map { "\($0)" } ?? "·")
@@ -141,11 +149,13 @@ struct ReviewView: View {
                         }
                     }
                     .font(.subheadline)
-                    if item.byDeclarerSide {
+                    if item.byDeclarerSide == attempt.viewerIsDeclarerSide {
                         NavigationLink(value: Route.play(board.id, PlayLaunch(mode: attempt.mode,
                                                                               robotLevel: attempt.robotLevel,
                                                                               contract: attempt.contract,
-                                                                              startPlays: PlayState.prefix(attempt.plays, beforeTrick: item.trickNumber)))) {
+                                                                              startPlays: PlayState.prefix(attempt.plays, beforeTrick: item.trickNumber),
+                                                                              viewer: attempt.viewer,
+                                                                              practiceID: attempt.practiceID))) {
                             Label("从第 \(item.trickNumber) 墩重打", systemImage: "arrow.counterclockwise")
                                 .font(.subheadline.weight(.medium))
                         }
