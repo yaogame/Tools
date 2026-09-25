@@ -44,6 +44,18 @@ struct PracticeDeal: Codable, Identifiable, Hashable {
     var ddTable: [[Int]]?
     var bestScore: Int?
     var best: [String]?
+    /// 叫牌专题：推荐的开叫（如 "1S"、"1NT"、"2C"）。
+    var opening: String?
+    /// 叫牌专题的编号，见 BiddingTopic。
+    var topic: String?
+
+    var biddingTopic: BiddingTopic { topic.flatMap { BiddingTopic(rawValue: $0) } ?? .mixed }
+
+    /// 推荐开叫换成叫品。
+    var openingCall: Call? {
+        guard let opening, let contract = Contract(text: opening, declarer: .north) else { return nil }
+        return .bid(contract.level, contract.strain)
+    }
 
     var kind: PracticeKind { id.hasPrefix("F") ? .defense : .declarer }
     var deal: Deal? { try? DealParser.parsePBN(pbn).deal }
@@ -83,14 +95,31 @@ struct PracticeLibrary: Codable {
     let defense: [PracticeDeal]
     let bidding: [PracticeDeal]
 
+    /// 牌库直接编在代码里（PracticeDealsData.swift），不依赖资源文件打包。
     static let shared: PracticeLibrary = {
-        guard let url = Bundle.main.url(forResource: "PracticeDeals", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let library = try? JSONDecoder().decode(PracticeLibrary.self, from: data) else {
+        guard let raw = try? JSONDecoder().decode(RawLibrary.self, from: Data(practiceDealsJSON.utf8)) else {
             return PracticeLibrary(version: 0, declarer: [], defense: [], bidding: [])
         }
-        return library
+        return PracticeLibrary(version: raw.version,
+                               declarer: raw.declarer.compactMap(\.value),
+                               defense: raw.defense.compactMap(\.value),
+                               bidding: raw.bidding.compactMap(\.value))
     }()
+
+    /// 逐条解码，个别条目出错只跳过那一条。
+    private struct RawLibrary: Decodable {
+        let version: Int
+        let declarer: [Lossy]
+        let defense: [Lossy]
+        let bidding: [Lossy]
+    }
+
+    private struct Lossy: Decodable {
+        let value: PracticeDeal?
+        init(from decoder: Decoder) throws {
+            value = try? PracticeDeal(from: decoder)
+        }
+    }
 
     func deals(_ kind: PracticeKind, level: PracticeLevel) -> [PracticeDeal] {
         (kind == .declarer ? declarer : defense).filter { $0.level == level.rawValue }
@@ -101,12 +130,16 @@ struct PracticeLibrary: Codable {
         return (id.hasPrefix("F") ? defense : declarer).first { $0.id == id }
     }
 
-    /// 同一级别里的下一副。
+    func bidding(_ topic: BiddingTopic) -> [PracticeDeal] {
+        bidding.filter { $0.biddingTopic == topic }
+    }
+
+    /// 同一级别（叫牌是同一专题）里的下一副。
     func next(after id: String) -> PracticeDeal? {
         guard let current = deal(id: id) else { return nil }
         let list: [PracticeDeal]
         if id.hasPrefix("B") {
-            list = bidding
+            list = bidding(current.biddingTopic)
         } else if let level = current.practiceLevel {
             list = deals(current.kind, level: level)
         } else {
@@ -114,5 +147,45 @@ struct PracticeLibrary: Codable {
         }
         guard let index = list.firstIndex(where: { $0.id == id }), index + 1 < list.count else { return nil }
         return list[index + 1]
+    }
+}
+
+/// 叫牌练习的专题。按自然制：五张高花、1NT 15–17 点、强 2♣、弱二。
+enum BiddingTopic: String, CaseIterable, Identifiable, Codable {
+    case major, minor, nt, strong, preempt, mixed
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .major: return "1 阶高花开叫"
+        case .minor: return "1 阶低花开叫"
+        case .nt: return "1NT 开叫"
+        case .strong: return "强开叫（2♣ / 2NT）"
+        case .preempt: return "阻击开叫（弱二 / 三阶）"
+        case .mixed: return "综合练习"
+        }
+    }
+
+    var rule: String {
+        switch self {
+        case .major: return "12–21 点，5 张以上高花；两门 5 张先叫 ♠。"
+        case .minor: return "12–21 点，没有 5 张高花、不适合 1NT：方块长叫 1♦，梅花长叫 1♣；3-3 叫 1♣，4-4 叫 1♦。"
+        case .nt: return "15–17 点平均牌型，没有 5 张高花。"
+        case .strong: return "22 点以上开叫 2♣；20–21 点平均牌型开叫 2NT。"
+        case .preempt: return "5–10 点：6 张好套开叫 2♦ / 2♥ / 2♠，7 张套开叫三阶。"
+        case .mixed: return "南北合计 20 点以上的随机牌，叫到得分最高的定约。"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .major: return "suit.spade.fill"
+        case .minor: return "suit.club.fill"
+        case .nt: return "circle.grid.2x2"
+        case .strong: return "bolt.fill"
+        case .preempt: return "hand.raised.fill"
+        case .mixed: return "shuffle"
+        }
     }
 }

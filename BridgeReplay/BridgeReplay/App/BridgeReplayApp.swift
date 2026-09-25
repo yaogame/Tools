@@ -62,6 +62,7 @@ enum Route: Hashable {
     case practiceLevel(PracticeKind, PracticeLevel)
     case practice(String)
     case bidding(String)
+    case biddingTopic(BiddingTopic)
     case example(UUID)
 }
 
@@ -117,6 +118,8 @@ struct RouteView: View {
             PracticePlayContainer(practiceID: id)
         case .bidding(let id):
             BiddingView(dealID: id)
+        case .biddingTopic(let topic):
+            BiddingTopicView(topic: topic)
         case .example(let id):
             ExampleDetailView(exampleID: id)
         }

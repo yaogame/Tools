@@ -121,7 +121,7 @@ struct DealEditorView: View {
             if recognizing {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("正在识别照片里的牌，大约需要几秒…")
+                    Text("正在识别照片里的牌，大约需要 10–20 秒…")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

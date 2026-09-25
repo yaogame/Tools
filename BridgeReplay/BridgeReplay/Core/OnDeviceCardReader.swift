@@ -10,7 +10,8 @@ import Vision
 /// 3. 在它旁边找同颜色的笔画当作点数（牌角里点数在花色上方），由此得到这张牌"朝上"的方向。
 /// 4. 花色：红色看形状上下是否对称（♥ 上宽下尖，♦ 上下对称），黑色看轮廓凹口数量（♣ 三瓣有 3 个以上凹口，♠ 只有 2 个）。
 /// 5. 点数：把点数区域转正、放大、二值化后交给 Vision 文字识别。
-/// 6. 按在照片里的位置分成上下左右四手牌。
+/// 6. 另外把整张照片按 12 个角度转着交给 Vision 找点数字符，再到字符下方找花色，补上第一步漏掉的牌。
+/// 7. 按在照片里的位置分成上下左右四手牌。
 enum OnDeviceCardReader {
     static func read(_ image: UIImage) async throws -> RecognitionResult {
         try await Task.detached(priority: .userInitiated) {
@@ -35,13 +36,22 @@ enum OnDeviceCardReader {
             let up = (x: dx / distance, y: dy / distance)
             let suit = classifySuit(suitBlob, up: up)
             let glyphSize = Double(max(glyph.width, glyph.height))
-            guard let crop = bitmap.uprightCrop(centerX: glyph.cx, centerY: glyph.cy, up: up,
-                                                width: 2.0 * glyphSize, height: 1.5 * glyphSize,
-                                                scale: 4, red: suitBlob.color == .red),
-                  let rank = readRank(crop) else { continue }
+            var rank: Int?
+            // 先用二值化的图读，读不出再用灰度图读一次。
+            for binarize in [true, false] where rank == nil {
+                if let crop = bitmap.uprightCrop(centerX: glyph.cx, centerY: glyph.cy, up: up,
+                                                 width: 2.0 * glyphSize, height: 1.5 * glyphSize,
+                                                 scale: 4, red: suitBlob.color == .red, binarize: binarize) {
+                    rank = readRank(crop)
+                }
+            }
+            guard let rank else { continue }
             detections.append(Detection(card: Card(suit: suit, rank: rank),
-                                        x: suitBlob.cx, y: suitBlob.cy, size: suitBlob.size))
+                                        x: suitBlob.cx, y: suitBlob.cy, size: suitBlob.size, blobID: suitBlob.id))
         }
+
+        // 第二条路：整图找点数字符，补上漏掉的牌。
+        detections += textPass(bitmap, blobs: blobs, used: Set(detections.map(\.blobID)))
 
         // 牌面中间的大花色比牌角的大很多，去掉。
         if !detections.isEmpty {
@@ -57,6 +67,75 @@ enum OnDeviceCardReader {
         let x: Double
         let y: Double
         let size: Double
+        let blobID: Int
+    }
+
+    // MARK: - 整图文字识别
+
+    /// 把整张照片转 12 个角度交给 Vision，找到点数字符后，在它下方找花色符号。
+    static func textPass(_ bitmap: Bitmap, blobs: [Blob], used: Set<Int>) -> [Detection] {
+        guard let base = bitmap.cgImage() else { return [] }
+        let suitBlobs = blobs.filter(\.isSuitLike)
+        var taken = used
+        var result: [Detection] = []
+        for degrees in stride(from: 0, to: 360, by: 30) {
+            guard let rotated = RotatedImage(base, degrees: Double(degrees)) else { continue }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
+            request.minimumTextHeight = 0.008
+            let handler = VNImageRequestHandler(cgImage: rotated.image, options: [:])
+            guard (try? handler.perform([request])) != nil else { continue }
+            for observation in request.results ?? [] {
+                guard let candidate = observation.topCandidates(1).first else { continue }
+                for token in rankTokens(in: candidate.string) {
+                    guard let box = (try? candidate.boundingBox(for: token.range))?.boundingBox else { continue }
+                    let center = rotated.toOriginal(x: Double(box.midX), y: Double(box.midY))
+                    let below = rotated.toOriginal(x: Double(box.midX), y: Double(box.midY - box.height))
+                    let dx = below.x - center.x, dy = below.y - center.y
+                    let glyphHeight = (dx * dx + dy * dy).squareRoot()
+                    guard glyphHeight > 4 else { continue }
+                    let target = (x: center.x + dx * 1.1, y: center.y + dy * 1.1)
+                    var best: Blob?
+                    var bestDistance = Double.infinity
+                    for b in suitBlobs where !taken.contains(b.id) {
+                        let d = ((b.cx - target.x) * (b.cx - target.x) + (b.cy - target.y) * (b.cy - target.y)).squareRoot()
+                        if d < bestDistance, d < 0.9 * glyphHeight, b.size > 0.3 * glyphHeight, b.size < 1.5 * glyphHeight {
+                            best = b
+                            bestDistance = d
+                        }
+                    }
+                    guard let suitBlob = best else { continue }
+                    taken.insert(suitBlob.id)
+                    let up = (x: -dx / glyphHeight, y: -dy / glyphHeight)
+                    result.append(Detection(card: Card(suit: classifySuit(suitBlob, up: up), rank: token.rank),
+                                            x: suitBlob.cx, y: suitBlob.cy, size: suitBlob.size, blobID: suitBlob.id))
+                }
+            }
+        }
+        return result
+    }
+
+    /// 从一行文字里挑出点数字符（A K Q J 10 9…2）及其位置。
+    static func rankTokens(in text: String) -> [(range: Range<String.Index>, rank: Int)] {
+        var tokens: [(range: Range<String.Index>, rank: Int)] = []
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = String(text[i]).uppercased()
+            let next = text.index(after: i)
+            if ["1", "I", "L"].contains(c), next < text.endIndex, ["0", "O"].contains(String(text[next]).uppercased()) {
+                let end = text.index(after: next)
+                tokens.append((i..<end, 8))
+                i = end
+                continue
+            }
+            if c != "T", let rank = Card.rank(from: c) {
+                tokens.append((i..<next, rank))
+            }
+            i = next
+        }
+        return tokens
     }
 
     /// 以所有识别到的牌的中心为原点，按方位分成上下左右四手。
@@ -203,6 +282,14 @@ struct Bitmap {
         pixels = buffer
     }
 
+    func cgImage() -> CGImage? {
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     @inline(__always) func rgb(_ x: Int, _ y: Int) -> (Int, Int, Int) {
         let i = (y * width + x) * 4
         return (Int(pixels[i]), Int(pixels[i + 1]), Int(pixels[i + 2]))
@@ -210,7 +297,7 @@ struct Bitmap {
 
     /// 以 (centerX, centerY) 为中心、让 up 方向朝上，裁出一块放大并二值化的灰度图（字为黑、底为白）。
     func uprightCrop(centerX: Double, centerY: Double, up: (x: Double, y: Double),
-                     width cw: Double, height ch: Double, scale: Double, red: Bool) -> CGImage? {
+                     width cw: Double, height ch: Double, scale: Double, red: Bool, binarize: Bool = true) -> CGImage? {
         let ow = Int(cw * scale), oh = Int(ch * scale)
         guard ow > 4, oh > 4 else { return nil }
         let right = (x: -up.y, y: up.x)
@@ -236,8 +323,12 @@ struct Bitmap {
         var out = [UInt8](repeating: 255, count: pw * ph)
         for v in 0..<oh {
             for u in 0..<ow {
-                let ink = red ? reds[v * ow + u] : gray[v * ow + u] < 0.55 * paper
-                if ink { out[(v + pad) * pw + u + pad] = 0 }
+                if binarize {
+                    let ink = red ? reds[v * ow + u] : gray[v * ow + u] < 0.55 * paper
+                    if ink { out[(v + pad) * pw + u + pad] = 0 }
+                } else {
+                    out[(v + pad) * pw + u + pad] = UInt8(max(0, min(255, gray[v * ow + u] / max(paper, 1) * 255)))
+                }
             }
         }
         guard let provider = CGDataProvider(data: Data(out) as CFData) else { return nil }
@@ -349,7 +440,7 @@ struct Blob {
     var fill: Double { Double(area) / Double(width * height) }
     var isSuitLike: Bool {
         let aspect = Double(width) / Double(max(height, 1))
-        return solidity > 0.78 && fill > 0.4 && aspect > 0.45 && aspect < 2.2 && area >= 50
+        return solidity > 0.78 && fill > 0.4 && aspect > 0.45 && aspect < 2.2 && area >= 30
     }
 
     /// 找出掩码里所有面积在合理范围内的 8 连通区域。
@@ -485,5 +576,50 @@ enum Shape {
             depths.append(deepest / Double(size))
         }
         return depths.filter { $0 > 0.06 }.sorted(by: >)
+    }
+}
+
+// MARK: - 旋转
+
+/// 转过角度的整张照片，以及把 Vision 坐标换回原图像素坐标的方法。
+struct RotatedImage {
+    let image: CGImage
+    let radians: Double
+    let width: Double
+    let height: Double
+    let sourceWidth: Double
+    let sourceHeight: Double
+
+    init?(_ source: CGImage, degrees: Double) {
+        let r = degrees * .pi / 180
+        let w = Double(source.width), h = Double(source.height)
+        let nw = Int((abs(w * cos(r)) + abs(h * sin(r))).rounded())
+        let nh = Int((abs(w * sin(r)) + abs(h * cos(r))).rounded())
+        guard nw > 0, nh > 0,
+              let ctx = CGContext(data: nil, width: nw, height: nh, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: nw, height: nh))
+        ctx.translateBy(x: CGFloat(nw) / 2, y: CGFloat(nh) / 2)
+        ctx.rotate(by: CGFloat(r))
+        ctx.draw(source, in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
+        guard let out = ctx.makeImage() else { return nil }
+        image = out
+        radians = r
+        width = Double(nw)
+        height = Double(nh)
+        sourceWidth = w
+        sourceHeight = h
+    }
+
+    /// Vision 的归一化坐标（左下角为原点）→ 原图像素坐标（左上角为原点）。
+    func toOriginal(x nx: Double, y ny: Double) -> (x: Double, y: Double) {
+        let px = nx * width - width / 2
+        let py = ny * height - height / 2
+        let c = cos(-radians), s = sin(-radians)
+        let qx = px * c - py * s
+        let qy = px * s + py * c
+        return (qx + sourceWidth / 2, sourceHeight / 2 - qy)
     }
 }

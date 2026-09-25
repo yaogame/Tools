@@ -18,33 +18,70 @@ extension BoardStore {
     }
 }
 
-/// 叫牌练习首页。
+/// 叫牌练习首页：按专题分组。
 struct BiddingHomeView: View {
+    @EnvironmentObject private var store: BoardStore
+
+    var body: some View {
+        List {
+            Section {
+                Text("你来叫南北两手，东西一直不叫。专题练习先判断北家该怎么开叫，叫完按双明手墩数表给定约打分，也可以直接去坐庄。叫牌体系按自然制：五张高花、1NT 15–17 点、强 2♣、弱二。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Section("专题") {
+                ForEach(BiddingTopic.allCases) { topic in
+                    let deals = PracticeLibrary.shared.bidding(topic)
+                    let played = deals.filter { !(store.biddingResults[$0.id] ?? []).isEmpty }.count
+                    NavigationLink(value: Route.biddingTopic(topic)) {
+                        HStack(spacing: 14) {
+                            Image(systemName: topic.systemImage)
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(RoundedRectangle(cornerRadius: 12).fill(Theme.felt))
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(topic.name).font(.body.weight(.semibold))
+                                    Spacer()
+                                    Text("\(played) / \(deals.count)").font(.footnote).foregroundStyle(.secondary)
+                                }
+                                Text(topic.rule).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+        .navigationTitle("叫牌练习")
+    }
+}
+
+/// 一个专题里的所有牌。
+struct BiddingTopicView: View {
+    let topic: BiddingTopic
     @EnvironmentObject private var store: BoardStore
     @Environment(\.navigator) private var navigator
 
     var body: some View {
-        let deals = PracticeLibrary.shared.bidding
-        let played = deals.filter { !(store.biddingResults[$0.id] ?? []).isEmpty }
-        let perfect = deals.filter { deal in (store.biddingResults[deal.id] ?? []).contains { $0.score >= $0.bestScore } }
+        let deals = PracticeLibrary.shared.bidding(topic)
+        let perfect = deals.filter { deal in (store.biddingResults[deal.id] ?? []).contains { $0.score >= $0.bestScore } }.count
         List {
             Section {
-                Text("你来叫南北两手，东西一直不叫，目标是叫到得分最高的定约。叫完后按双明手墩数表打分，也可以直接去坐庄这个定约。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    statTile("已练", "\(played.count) / \(deals.count)")
-                    statTile("叫到最佳", "\(perfect.count)")
+                Text(topic.rule).font(.subheadline).foregroundStyle(.secondary)
+                if deals.isEmpty {
+                    Text("这个专题还没有牌。").foregroundStyle(Theme.red)
+                } else {
+                    Text("叫到最佳定约 \(perfect) / \(deals.count) 副").font(.subheadline)
                 }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
             }
-            if let next = deals.first(where: { (store.biddingResults[$0.id] ?? []).isEmpty }) {
+            if let next = deals.first(where: { (store.biddingResults[$0.id] ?? []).isEmpty }) ?? deals.first {
                 Section {
                     Button {
                         navigator.push(.bidding(next.id))
                     } label: {
-                        Label("继续：第 \(next.number) 副", systemImage: "play.fill")
+                        Label("开始：第 \(next.number) 副", systemImage: "play.fill")
                             .font(.body.weight(.semibold))
                     }
                 }
@@ -57,17 +94,8 @@ struct BiddingHomeView: View {
                 }
             }
         }
-        .navigationTitle("叫牌练习")
-    }
-
-    private func statTile(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.system(.title2, design: .serif).weight(.bold))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white))
+        .navigationTitle(topic.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -121,6 +149,7 @@ struct BiddingView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     AuctionTable(auction: current)
+                    openingFeedback(item: item, deal: deal, auction: current)
                     if current.isFinished {
                         resultCard(item: item, deal: deal, auction: current)
                     } else {
@@ -184,6 +213,31 @@ struct BiddingView: View {
         a.undo(to: lastMine)
         auction = a
         level = nil
+    }
+
+    // MARK: - 开叫判断
+
+    /// 专题练习：北家第一口叫牌和推荐开叫对比。
+    @ViewBuilder
+    private func openingFeedback(item: PracticeDeal, deal: Deal, auction: Auction) -> some View {
+        if let recommended = item.openingCall,
+           let index = auction.calls.indices.first(where: { auction.seat(at: $0) == .north }) {
+            let made = auction.calls[index]
+            let right = made == recommended
+            let hand = deal[.north]
+            VStack(alignment: .leading, spacing: 4) {
+                Label(right ? "开叫正确：\(made.label)" : "推荐开叫 \(recommended.label)（你叫了 \(made.label)）",
+                      systemImage: right ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(right ? Theme.felt : Theme.brassText)
+                Text("北家 \(hand.hcp) 点，牌型 \(hand.shapeText)。\(item.biddingTopic.rule)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14).fill(right ? Theme.felt.opacity(0.1) : Theme.brass.opacity(0.18)))
+        }
     }
 
     // MARK: - 手牌
