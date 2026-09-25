@@ -28,11 +28,11 @@ struct PlayView: View {
             HandFan(seat: model.topSeat, model: model, visible: model.isVisible(model.topSeat, showAll: showAll), showCardTricks: showCardTricks)
             HStack(alignment: .center, spacing: 4) {
                 SideHand(seat: model.leftSeat, model: model, visible: model.isVisible(model.leftSeat, showAll: showAll), showCardTricks: showCardTricks)
-                    .frame(width: 100)
+                    .frame(width: model.isVisible(model.leftSeat, showAll: showAll) ? 100 : 64)
                 TrickTable(model: model)
                     .frame(maxWidth: .infinity)
                 SideHand(seat: model.rightSeat, model: model, visible: model.isVisible(model.rightSeat, showAll: showAll), showCardTricks: showCardTricks)
-                    .frame(width: 100)
+                    .frame(width: model.isVisible(model.rightSeat, showAll: showAll) ? 100 : 64)
             }
             .frame(maxHeight: .infinity)
             Text(model.statusText)
@@ -268,6 +268,8 @@ private struct HandFan: View {
     let visible: Bool
     let showCardTricks: Bool
 
+    @AppStorage("confirmPlay") private var confirmPlay = true
+
     private let cardWidth: CGFloat = 48
     private let cardHeight: CGFloat = 70
 
@@ -281,27 +283,30 @@ private struct HandFan: View {
                         let playable = model.canPlay(card, from: seat)
                         let isTurn = model.state.turn == seat && model.isHumanControlled(seat)
                         let value = showCardTricks ? model.ddValue(for: card, seat: seat) : nil
-                        Button { model.tap(card, from: seat) } label: {
+                        let selected = model.isSelected(card, seat: seat)
+                        Button { model.tap(card, from: seat, confirm: confirmPlay) } label: {
                             CardFace(card: card, width: cardWidth, height: cardHeight,
                                      dimmed: isTurn && !playable,
+                                     highlighted: selected,
                                      badge: value,
                                      badgeIsBest: model.dd?.bestCards.contains(card) ?? false)
                         }
                         .buttonStyle(.plain)
                         .disabled(!playable)
-                        .offset(x: positions[index], y: playable ? 2 : 10)
+                        .offset(x: positions[index], y: selected ? -4 : (playable ? 4 : 12))
+                        .zIndex(selected ? 1 : 0)
                         .animation(.easeOut(duration: 0.12), value: playable)
+                        .animation(.easeOut(duration: 0.12), value: selected)
                     }
                 }
             } else {
-                HStack(spacing: -18) {
-                    ForEach(0..<min(hand.count, 6), id: \.self) { _ in CardBack() }
-                    Text("\(hand.count) 张").font(.caption).foregroundStyle(.white.opacity(0.8)).padding(.leading, 26)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(seat == model.contract.dummy ? "首攻后明手亮牌" : "")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(height: cardHeight + 12)
+        .frame(height: visible ? cardHeight + 16 : 24)
     }
 
     /// 每张牌的横向位置：同花色重叠，花色之间留一点空。
@@ -333,12 +338,13 @@ private struct SideHand: View {
     let showCardTricks: Bool
 
     @AppStorage("fourColorDeck") private var fourColor = false
+    @AppStorage("confirmPlay") private var confirmPlay = true
 
     var body: some View {
         let hand = model.state.hand(seat)
         let isTurn = model.state.turn == seat
         VStack(alignment: .leading, spacing: 5) {
-            Text("\(seat.name) · \(model.role(of: seat))")
+            Text("\(seat.name) · \(model.role(of: seat))" + (visible ? "" : " · \(hand.count)张"))
                 .font(.caption)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 8)
@@ -358,23 +364,19 @@ private struct SideHand: View {
                         }
                     }
                 }
-            } else {
-                HStack(spacing: -16) {
-                    ForEach(0..<min(hand.count, 3), id: \.self) { _ in CardBack() }
-                }
-                Text("\(hand.count) 张").font(.caption).foregroundStyle(.white.opacity(0.8))
             }
         }
-        .padding(8)
+        .padding(visible ? 8 : 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.16)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(visible ? 0.16 : 0)))
     }
 
     private func chip(_ card: Card) -> some View {
         let playable = model.canPlay(card, from: seat)
         let value = showCardTricks ? model.ddValue(for: card, seat: seat) : nil
         let best = model.dd?.bestCards.contains(card) ?? false
-        return Button { model.tap(card, from: seat) } label: {
+        let selected = model.isSelected(card, seat: seat)
+        return Button { model.tap(card, from: seat, confirm: confirmPlay) } label: {
             VStack(spacing: 0) {
                 Text(card.rankLabel)
                     .font(.system(size: 13, weight: .bold, design: .serif))
@@ -387,8 +389,8 @@ private struct SideHand: View {
             }
             .frame(minWidth: 18, minHeight: 22)
             .padding(.horizontal, 1)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Theme.cardFace.opacity(playable ? 1 : 0.8)))
-            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(playable ? Theme.brass : Color.clear, lineWidth: 1.5))
+            .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Theme.brass : Theme.cardFace.opacity(playable ? 1 : 0.8)))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(playable ? Theme.brass : Color.clear, lineWidth: selected ? 2.5 : 1.5))
         }
         .buttonStyle(.plain)
         .disabled(!playable)

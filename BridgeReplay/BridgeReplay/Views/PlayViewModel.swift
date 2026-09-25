@@ -22,6 +22,8 @@ final class PlayViewModel: ObservableObject {
     /// 第 k 墩开始前（k 从 0 起，13 表示打完）双明手下庄家方最终能拿的墩数。
     @Published private(set) var ddAtTrickStart: [Int: Int] = [:]
     @Published var finishedAttempt: Attempt?
+    /// 点了一下、还没出的牌；再点一次才出。
+    @Published private(set) var selected: Play?
 
     var onFinish: ((Attempt) -> Void)?
 
@@ -92,10 +94,21 @@ final class PlayViewModel: ObservableObject {
         state.turn == seat && isHumanControlled(seat) && state.legalCards(for: seat).contains(card)
     }
 
-    func tap(_ card: Card, from seat: Seat) {
+    /// 点一张牌：先选中（抬起），再点一次才出。confirm 为 false 时点一下就出。
+    func tap(_ card: Card, from seat: Seat, confirm: Bool = true) {
         guard canPlay(card, from: seat) else { return }
-        state.apply(Play(seat: seat, card: card))
+        let play = Play(seat: seat, card: card)
+        if confirm && selected != play {
+            selected = play
+            return
+        }
+        selected = nil
+        state.apply(play)
         refresh()
+    }
+
+    func isSelected(_ card: Card, seat: Seat) -> Bool {
+        selected == Play(seat: seat, card: card)
     }
 
     func undo() {
@@ -150,6 +163,7 @@ final class PlayViewModel: ObservableObject {
 
     /// 每次局面变化后：更新双明手结果、打完就记录、轮到机器人就让它出。
     private func refresh() {
+        selected = nil
         robotTask?.cancel()
         ddTask?.cancel()
 
@@ -254,6 +268,9 @@ final class PlayViewModel: ObservableObject {
         var prefix = ""
         if state.currentTrick.isEmpty, let last = state.lastTrick {
             prefix = "\(last.winner.name)家赢得第 \(state.completedTricks.count) 墩 · "
+        }
+        if let selected, selected.seat == turn {
+            return "已选 \(selected.card.label)，再点一次出牌"
         }
         if isHumanControlled(turn) {
             return prefix + "轮到\(turn.name)家（\(role(of: turn))）" + (state.currentTrick.isEmpty ? "出牌" : "跟牌")

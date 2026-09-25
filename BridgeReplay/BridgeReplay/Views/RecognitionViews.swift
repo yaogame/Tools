@@ -112,6 +112,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("fourColorDeck") private var fourColor = false
     @AppStorage("showCardTricks") private var showCardTricks = true
+    @AppStorage("confirmPlay") private var confirmPlay = true
 
     var body: some View {
         NavigationStack {
@@ -119,6 +120,7 @@ struct SettingsView: View {
                 Section("牌面") {
                     Toggle("四色牌（方块橙色、梅花绿色）", isOn: $fourColor)
                     Toggle("出牌时在每张牌上显示双明手墩数", isOn: $showCardTricks)
+                    Toggle("点一下选中，再点一次才出牌", isOn: $confirmPlay)
                 }
                 Section {
                     LabeledContent("照片识别", value: "在手机上完成，不联网")
