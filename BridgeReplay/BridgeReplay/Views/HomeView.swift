@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var draft: DealDraft?
     @State private var showCamera = false
     @State private var showPaste = false
+    @State private var showSettings = false
     @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
@@ -32,11 +33,11 @@ struct HomeView: View {
                         Button {
                             showCamera = true
                         } label: {
-                            entryLabel("拍照录入", detail: "四家摊开拍一张，照着照片点选", systemImage: "camera")
+                            entryLabel("拍照录入", detail: "四家摊开拍一张，自动识别，确认方向后填入", systemImage: "camera")
                         }
                     }
                     PhotosPicker(selection: $photoItem, matching: .images) {
-                        entryLabel("从相册选照片", detail: "用拍好的牌桌照片对照录入", systemImage: "photo")
+                        entryLabel("从相册选照片", detail: "用拍好的牌桌照片自动识别", systemImage: "photo")
                     }
                     Button {
                         draft = DealDraft(board: PracticeBoard())
@@ -65,6 +66,13 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("坐庄复盘")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("设置")
+                }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .board(let id):

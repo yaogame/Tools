@@ -9,7 +9,22 @@ struct DealEditorView: View {
     @State private var photo: UIImage?
     @State private var seat: Seat = .north
     @State private var showPhoto = false
+    @State private var showSettings = false
+    @State private var recognizing = false
+    @State private var recognitionError: String?
+    @State private var needsAPIKey = false
+    @State private var recognitionNote: String?
+    @State private var pending: PendingRecognition?
+    @State private var autoStarted = false
+    /// 按排除法推断出来的牌（黄色）和识别冲突的牌（红框），需要核对。
+    @State private var inferred = Set<Card>()
+    @State private var conflicts = Set<Card>()
     @AppStorage("fourColorDeck") private var fourColor = false
+
+    private struct PendingRecognition: Identifiable {
+        let id = UUID()
+        let result: RecognitionResult
+    }
 
     init(draft: DealDraft, onSave: @escaping (PracticeBoard, UIImage?) -> Void) {
         self.onSave = onSave
@@ -38,6 +53,8 @@ struct DealEditorView: View {
                                 }
                         }
                         .accessibilityLabel("放大照片")
+
+                        recognitionPanel
                     }
 
                     boardInfo
@@ -83,18 +100,111 @@ struct DealEditorView: View {
             .fullScreenCover(isPresented: $showPhoto) {
                 if let photo { ZoomablePhotoView(image: photo) }
             }
+            .sheet(item: $pending) { item in
+                if let photo {
+                    OrientationConfirmView(image: photo, result: item.result) { assembled in
+                        apply(assembled, boardNumber: item.result.boardNumber)
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
+            .task {
+                // 有照片、有 Key、还没录入任何牌时，自动开始识别。
+                guard !autoStarted, photo != nil, APIKeyStore.load() != nil,
+                      board.deal.hands.allSatisfy({ $0.isEmpty }) else { return }
+                autoStarted = true
+                startRecognition()
+            }
         }
+    }
+
+    // MARK: - 照片识别
+
+    private var recognitionPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if recognizing {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在识别照片里的牌，大约需要半分钟…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+            } else {
+                Button {
+                    startRecognition()
+                } label: {
+                    Label(board.deal.hands.allSatisfy({ $0.isEmpty }) ? "自动识别这张照片" : "重新识别照片",
+                          systemImage: "wand.and.stars")
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            if let recognitionError {
+                Text(recognitionError)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.red)
+                if needsAPIKey {
+                    Button("去设置 API Key") { showSettings = true }
+                        .font(.footnote.weight(.semibold))
+                }
+            }
+            if let recognitionNote {
+                Text(recognitionNote)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.brassText)
+            }
+        }
+    }
+
+    private func startRecognition() {
+        guard let photo else { return }
+        guard let key = APIKeyStore.load() else {
+            recognitionError = RecognitionError.missingAPIKey.localizedDescription
+            needsAPIKey = true
+            return
+        }
+        recognizing = true
+        recognitionError = nil
+        needsAPIKey = false
+        Task {
+            do {
+                let result = try await ClaudeCardReader(apiKey: key).read(photo)
+                pending = PendingRecognition(result: result)
+            } catch {
+                recognitionError = error.localizedDescription
+                if let recognition = error as? RecognitionError, case .http(401, _) = recognition {
+                    needsAPIKey = true
+                }
+            }
+            recognizing = false
+        }
+    }
+
+    private func apply(_ assembled: AssembledDeal, boardNumber: Int?) {
+        board.deal = assembled.deal
+        inferred = assembled.inferred
+        conflicts = assembled.conflicts
+        if let boardNumber, (1...128).contains(boardNumber) { setBoardNumber(boardNumber) }
+        let filled = assembled.deal.hands.reduce(0) { $0 + $1.count }
+        var note = "已自动填入 \(filled) 张"
+        if !inferred.isEmpty { note += "，其中 \(inferred.count) 张按排除法推断（黄色）" }
+        if !conflicts.isEmpty { note += "，\(conflicts.count) 张识别重复（红框）" }
+        if !assembled.deal.isComplete { note += "，还差 \(assembled.deal.unassigned.count) 张需要手动补上" }
+        recognitionNote = note + "。请对照照片核对。"
+    }
+
+    private func setBoardNumber(_ n: Int) {
+        board.boardNumber = n
+        board.dealer = BoardNumbering.dealer(board: n)
+        board.vulnerability = BoardNumbering.vulnerability(board: n)
     }
 
     private var boardInfo: some View {
         VStack(spacing: 10) {
-            Stepper(value: Binding(
-                get: { board.boardNumber },
-                set: { n in
-                    board.boardNumber = n
-                    board.dealer = BoardNumbering.dealer(board: n)
-                    board.vulnerability = BoardNumbering.vulnerability(board: n)
-                }), in: 1...128) {
+            Stepper(value: Binding(get: { board.boardNumber }, set: { setBoardNumber($0) }), in: 1...128) {
                 Text("副号 \(board.boardNumber)").font(.headline)
             }
             HStack {
@@ -153,8 +263,16 @@ struct DealEditorView: View {
     private func cardCell(_ card: Card) -> some View {
         let owner = board.deal.owner(of: card)
         let mine = owner == seat
+        let border: Color = conflicts.contains(card) ? Theme.red : (inferred.contains(card) ? Theme.brass : Color.black.opacity(0.12))
+        let borderWidth: CGFloat = conflicts.contains(card) || inferred.contains(card) ? 2.5 : 1
+        var spoken: String = card.spokenName
+        spoken += owner.map { "，在\($0.name)家" } ?? "，未分配"
+        if inferred.contains(card) { spoken += "，推断的" }
+        if conflicts.contains(card) { spoken += "，识别重复" }
         return Button {
             board.deal.toggle(card, for: seat)
+            inferred.remove(card)
+            conflicts.remove(card)
         } label: {
             VStack(spacing: 0) {
                 Text(card.rankLabel)
@@ -169,10 +287,10 @@ struct DealEditorView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(mine ? Theme.felt : (owner == nil ? Color.white : Color.black.opacity(0.06)))
             )
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.black.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(border, lineWidth: borderWidth))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(card.spokenName + (owner.map { "，在\($0.name)家" } ?? "，未分配"))
+        .accessibilityLabel(spoken)
     }
 }
 
