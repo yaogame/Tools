@@ -9,6 +9,8 @@ struct PlayView: View {
     @State private var savedRestoreNote = false
     @State private var showSaveExample = false
     @AppStorage("showCardTricks") private var showCardTricks = true
+    /// 坐庄练习默认不显示双明手墩数（打完后在结果和复盘里看）。
+    @State private var revealHints = false
     @AppStorage("fourColorDeck") private var fourColor = false
 
     private let board: PracticeBoard
@@ -25,13 +27,13 @@ struct PlayView: View {
         VStack(spacing: 6) {
             header
             seatTag(model.topSeat)
-            HandFan(seat: model.topSeat, model: model, visible: model.isVisible(model.topSeat, showAll: showAll), showCardTricks: showCardTricks)
+            HandFan(seat: model.topSeat, model: model, visible: model.isVisible(model.topSeat, showAll: showAll), showCardTricks: showCardTricks && showHints)
             HStack(alignment: .center, spacing: 4) {
-                SideHand(seat: model.leftSeat, model: model, visible: model.isVisible(model.leftSeat, showAll: showAll), showCardTricks: showCardTricks)
+                SideHand(seat: model.leftSeat, model: model, visible: model.isVisible(model.leftSeat, showAll: showAll), showCardTricks: showCardTricks && showHints)
                     .frame(width: model.isVisible(model.leftSeat, showAll: showAll) ? 100 : 64)
                 TrickTable(model: model)
                     .frame(maxWidth: .infinity)
-                SideHand(seat: model.rightSeat, model: model, visible: model.isVisible(model.rightSeat, showAll: showAll), showCardTricks: showCardTricks)
+                SideHand(seat: model.rightSeat, model: model, visible: model.isVisible(model.rightSeat, showAll: showAll), showCardTricks: showCardTricks && showHints)
                     .frame(width: model.isVisible(model.rightSeat, showAll: showAll) ? 100 : 64)
             }
             .frame(maxHeight: .infinity)
@@ -41,9 +43,9 @@ struct PlayView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .accessibilityAddTraits(.updatesFrequently)
-            HandFan(seat: model.bottomSeat, model: model, visible: true, showCardTricks: showCardTricks)
+            HandFan(seat: model.bottomSeat, model: model, visible: true, showCardTricks: showCardTricks && showHints)
             seatTag(model.bottomSeat)
-            TrickHistoryStrip(model: model)
+            TrickHistoryStrip(model: model, showValues: showHints)
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
@@ -96,7 +98,7 @@ struct PlayView: View {
             Spacer()
             scoreBox(title: "庄", value: model.state.declarerTricks, color: Theme.brass)
             scoreBox(title: "防", value: model.state.defenderTricks, color: .white)
-            ddBox
+            if showHints { ddBox }
         }
         .padding(.top, 4)
     }
@@ -155,8 +157,17 @@ struct PlayView: View {
             }
             Spacer()
         }
-        Toggle(isOn: $showCardTricks) { Label("每张牌墩数", systemImage: "number.circle") }
-            .toggleStyle(.button)
+        if showHints {
+            Toggle(isOn: $showCardTricks) { Label("每张牌墩数", systemImage: "number.circle") }
+                .toggleStyle(.button)
+        }
+    }
+
+    /// 分级坐庄练习（编号 P 开头）打的时候不显示墩数提示。
+    private var isDeclarerPractice: Bool { model.practiceID?.hasPrefix("P") == true }
+
+    private var showHints: Bool {
+        !isDeclarerPractice || revealHints || model.state.isFinished
     }
 
     private var availableModes: [PracticeMode] {
@@ -186,6 +197,9 @@ struct PlayView: View {
                 Picker("防守机器人水平", selection: $model.robotLevel) {
                     ForEach(RobotLevel.allCases) { Text($0.name).tag($0) }
                 }
+            }
+            if isDeclarerPractice {
+                Toggle("显示双明手墩数提示", isOn: $revealHints)
             }
             Divider()
             Button {
@@ -438,15 +452,17 @@ private struct TrickTable: View {
 
 private struct TrickHistoryStrip: View {
     @ObservedObject var model: PlayViewModel
+    /// 为 false 时只显示每墩谁赢，不显示双明手墩数。
+    let showValues: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("每墩后\(model.viewerSideName)可得")
+                Text(showValues ? "每墩后\(model.viewerSideName)可得" : "每墩归属")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.75))
                 Spacer()
-                if let start = model.viewerValue(atTrickStart: 0) {
+                if showValues, let start = model.viewerValue(atTrickStart: 0) {
                     Text("开局双明手 \(start) 墩")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.75))
@@ -464,8 +480,8 @@ private struct TrickHistoryStrip: View {
     private func cell(_ n: Int) -> some View {
         let trick: Trick? = n <= model.state.completedTricks.count ? model.state.completedTricks[n - 1] : nil
         let viewerWon = trick.map { $0.winner.isSameSide(as: model.viewer) } ?? false
-        let value = trick == nil ? nil : model.viewerValue(atTrickStart: n)
-        let previous = model.viewerValue(atTrickStart: n - 1)
+        let value = trick == nil || !showValues ? nil : model.viewerValue(atTrickStart: n)
+        let previous = showValues ? model.viewerValue(atTrickStart: n - 1) : nil
         var change = 0
         if let value, let previous { change = value - previous }
         let label = accessibilityText(n, played: trick != nil, viewerWon: viewerWon, value: value, change: change)

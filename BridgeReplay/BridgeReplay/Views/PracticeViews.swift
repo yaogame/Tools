@@ -61,7 +61,7 @@ struct PracticeHomeView: View {
     private var intro: String {
         switch kind {
         case .declarer:
-            return "随机生成、按双明手分析分级的牌。每副牌只要打对都能完成定约。你打庄家和明手，机器人按双明手最优防守；每墩后显示你还能拿几墩。"
+            return "随机生成、按双明手分析分级的牌。每副牌只要打对都能完成定约。你打庄家和明手，机器人按双明手最优防守。打的时候不提示墩数，打完在结果和复盘里看双明手分析。"
         case .defense:
             return "每副牌只要防对都能打宕一墩。你坐庄家左手首攻，同伴和庄家都由机器人按双明手打；每墩后显示防守还能拿几墩。"
         }
