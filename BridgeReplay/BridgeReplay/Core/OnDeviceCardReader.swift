@@ -205,22 +205,94 @@ enum OnDeviceCardReader {
         return tokens
     }
 
-    /// 以所有识别到的牌的中心为原点，按方位分成上下左右四手。
+    /// 分成四手：挨在一起的牌角连成一簇（同一手牌的扇面是连续的），取最大的 4 簇，
+    /// 按它们所在的方位对应上、右、下、左。离得远的零散识别（例如叫牌盒里的叫牌卡）会被丢掉。
     static func group(_ detections: [Detection]) -> RecognitionResult {
         guard !detections.isEmpty else { return RecognitionResult(hands: [:], compass: [:], boardNumber: nil, notes: "") }
-        let cx = detections.map(\.x).reduce(0, +) / Double(detections.count)
-        let cy = detections.map(\.y).reduce(0, +) / Double(detections.count)
+        let sizes = detections.map(\.size).sorted()
+        let median = sizes[sizes.count / 2]
+
+        var clustersFound: [[Int]] = []
+        for factor in [6.0, 4.5, 3.5] {
+            let big = clusters(detections, threshold: factor * median).filter { $0.count >= 2 }
+            if big.count >= 4 {
+                clustersFound = Array(big.prefix(4))
+                break
+            }
+        }
+
+        var sideOf: [Int: PhotoSide] = [:]
+        if clustersFound.count == 4 {
+            let centers = clustersFound.map { group -> (x: Double, y: Double) in
+                (group.map { detections[$0].x }.reduce(0, +) / Double(group.count),
+                 group.map { detections[$0].y }.reduce(0, +) / Double(group.count))
+            }
+            let cx = centers.map(\.x).reduce(0, +) / 4, cy = centers.map(\.y).reduce(0, +) / 4
+            // 从正上方开始顺时针的角度（度）。
+            let angles = centers.map { c -> Double in
+                let a = atan2(c.x - cx, -(c.y - cy)) * 180 / .pi
+                return a < 0 ? a + 360 : a
+            }
+            let order = angles.indices.sorted { angles[$0] < angles[$1] }
+            let sides: [PhotoSide] = [.top, .right, .bottom, .left]
+            var bestShift = 0, bestCost = Double.infinity
+            for shift in 0..<4 {
+                var cost = 0.0
+                for (k, cluster) in order.enumerated() {
+                    let target = Double((k + shift) % 4) * 90
+                    let diff = abs(angles[cluster] - target)
+                    cost += min(diff, 360 - diff)
+                }
+                if cost < bestCost { bestCost = cost; bestShift = shift }
+            }
+            for (k, cluster) in order.enumerated() {
+                for i in clustersFound[cluster] { sideOf[i] = sides[(k + bestShift) % 4] }
+            }
+        } else {
+            // 分不出 4 簇时，退回按方位扇区分。
+            let cx = detections.map(\.x).reduce(0, +) / Double(detections.count)
+            let cy = detections.map(\.y).reduce(0, +) / Double(detections.count)
+            for (i, d) in detections.enumerated() {
+                let vx = d.x - cx, vy = d.y - cy
+                sideOf[i] = abs(vy) > abs(vx) ? (vy < 0 ? .top : .bottom) : (vx < 0 ? .left : .right)
+            }
+        }
+
         var hands: [PhotoSide: [PartialCard]] = [:]
         var seen: [PhotoSide: Set<Card>] = [:]
-        for d in detections {
-            let vx = d.x - cx, vy = d.y - cy
-            let side: PhotoSide = abs(vy) > abs(vx) ? (vy < 0 ? .top : .bottom) : (vx < 0 ? .left : .right)
+        for (i, d) in detections.enumerated() {
+            guard let side = sideOf[i] else { continue }
             // 同一手里同一张牌（例如最上面那张的两个牌角）只算一次。
             if seen[side, default: []].insert(d.card).inserted {
                 hands[side, default: []].append(PartialCard(suit: d.card.suit, rank: d.card.rank))
             }
         }
         return RecognitionResult(hands: hands, compass: [:], boardNumber: nil, notes: "")
+    }
+
+    /// 单链接聚类：距离小于 threshold 的点连在一起。返回按大小排序的簇（下标）。
+    static func clusters(_ detections: [Detection], threshold: Double) -> [[Int]] {
+        var parent = Array(detections.indices)
+        func find(_ i: Int) -> Int {
+            var i = i
+            while parent[i] != i {
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            }
+            return i
+        }
+        for i in detections.indices {
+            for j in (i + 1)..<detections.count {
+                let dx = detections[i].x - detections[j].x, dy = detections[i].y - detections[j].y
+                if (dx * dx + dy * dy).squareRoot() < threshold {
+                    let a = find(i), b = find(j)
+                    if a != b { parent[a] = b }
+                }
+            }
+        }
+        var groups: [Int: [Int]] = [:]
+        for i in detections.indices { groups[find(i), default: []].append(i) }
+        return groups.values.sorted { $0.count > $1.count }
     }
 
     // MARK: - 找点数
