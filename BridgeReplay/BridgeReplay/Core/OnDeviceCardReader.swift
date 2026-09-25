@@ -15,7 +15,7 @@ import Vision
 enum OnDeviceCardReader {
     static func read(_ image: UIImage) async throws -> RecognitionResult {
         try await Task.detached(priority: .userInitiated) {
-            guard let bitmap = Bitmap(image: image, maxLongEdge: 2000) else { throw RecognitionError.imageEncoding }
+            guard let bitmap = Bitmap(image: image, maxLongEdge: 2400) else { throw RecognitionError.imageEncoding }
             return recognize(bitmap)
         }.value
     }
@@ -27,27 +27,37 @@ enum OnDeviceCardReader {
         let blobs = Blob.find(in: masks.red, color: .red, width: bitmap.width, height: bitmap.height)
             + Blob.find(in: masks.black, color: .black, width: bitmap.width, height: bitmap.height)
 
-        var detections: [Detection] = []
+        // 第一条路：牌角花色 → 上方的点数。先把所有点数裁出来，再成批交给 Vision 读。
+        var candidates: [IndexCandidate] = []
         for suitBlob in blobs where suitBlob.isSuitLike {
             guard let glyph = bestRankGlyph(for: suitBlob, among: blobs) else { continue }
             let dx = glyph.cx - suitBlob.cx, dy = glyph.cy - suitBlob.cy
             let distance = (dx * dx + dy * dy).squareRoot()
             guard distance > 0 else { continue }
             let up = (x: dx / distance, y: dy / distance)
-            let suit = classifySuit(suitBlob, up: up)
             let glyphSize = Double(max(glyph.width, glyph.height))
-            var rank: Int?
-            // 先用二值化的图读，读不出再用灰度图读一次。
-            for binarize in [true, false] where rank == nil {
-                if let crop = bitmap.uprightCrop(centerX: glyph.cx, centerY: glyph.cy, up: up,
-                                                 width: 2.0 * glyphSize, height: 1.5 * glyphSize,
-                                                 scale: 4, red: suitBlob.color == .red, binarize: binarize) {
-                    rank = readRank(crop)
-                }
-            }
-            guard let rank else { continue }
-            detections.append(Detection(card: Card(suit: suit, rank: rank),
-                                        x: suitBlob.cx, y: suitBlob.cy, size: suitBlob.size, blobID: suitBlob.id))
+            guard let binary = bitmap.uprightCrop(centerX: glyph.cx, centerY: glyph.cy, up: up,
+                                                  width: 2.0 * glyphSize, height: 1.5 * glyphSize,
+                                                  scale: 4, red: suitBlob.color == .red, binarize: true),
+                  let gray = bitmap.uprightCrop(centerX: glyph.cx, centerY: glyph.cy, up: up,
+                                                width: 2.0 * glyphSize, height: 1.5 * glyphSize,
+                                                scale: 4, red: suitBlob.color == .red, binarize: false) else { continue }
+            candidates.append(IndexCandidate(blob: suitBlob, suit: classifySuit(suitBlob, up: up), binary: binary, gray: gray))
+        }
+
+        var ranks = [Int?](repeating: nil, count: candidates.count)
+        // 拼成一行一行交给 Vision，比一个字一个字读准得多；读不出的换灰度图再拼一次，最后再单张读。
+        readInStrips(candidates.indices.map { (index: $0, image: candidates[$0].binary) }, into: &ranks)
+        readInStrips(candidates.indices.filter { ranks[$0] == nil }.map { (index: $0, image: candidates[$0].gray) }, into: &ranks)
+        for i in candidates.indices where ranks[i] == nil {
+            ranks[i] = readRank(candidates[i].binary) ?? readRank(candidates[i].gray)
+        }
+
+        var detections: [Detection] = []
+        for (i, c) in candidates.enumerated() {
+            guard let rank = ranks[i] else { continue }
+            detections.append(Detection(card: Card(suit: c.suit, rank: rank),
+                                        x: c.blob.cx, y: c.blob.cy, size: c.blob.size, blobID: c.blob.id))
         }
 
         // 第二条路：整图找点数字符，补上漏掉的牌。
@@ -60,6 +70,59 @@ enum OnDeviceCardReader {
             detections.removeAll { $0.size > 1.7 * median }
         }
         return group(detections)
+    }
+
+    struct IndexCandidate {
+        let blob: Blob
+        let suit: Suit
+        let binary: CGImage
+        let gray: CGImage
+    }
+
+    /// 把若干张点数小图横着拼成一行（每行最多 8 个），交给 Vision 读，再按字符的横坐标对回是哪一张。
+    static func readInStrips(_ items: [(index: Int, image: CGImage)], into ranks: inout [Int?]) {
+        let height = 96.0, gap = 56.0, pad = 40.0
+        var start = 0
+        while start < items.count {
+            let group = Array(items[start..<min(start + 8, items.count)])
+            start += 8
+            var slots: [(index: Int, minX: Double, maxX: Double)] = []
+            var x = pad
+            for item in group {
+                let w = Double(item.image.width) * height / Double(max(item.image.height, 1))
+                slots.append((index: item.index, minX: x, maxX: x + w))
+                x += w + gap
+            }
+            let stripWidth = x - gap + pad
+            let stripHeight = height + 2 * pad
+            guard let ctx = CGContext(data: nil, width: Int(stripWidth), height: Int(stripHeight), bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { continue }
+            ctx.setFillColor(gray: 1, alpha: 1)
+            ctx.fill(CGRect(x: 0, y: 0, width: stripWidth, height: stripHeight))
+            ctx.interpolationQuality = .high
+            for (item, slot) in zip(group, slots) {
+                ctx.draw(item.image, in: CGRect(x: slot.minX, y: pad, width: slot.maxX - slot.minX, height: height))
+            }
+            guard let strip = ctx.makeImage() else { continue }
+
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.recognitionLanguages = ["en-US"]
+            let handler = VNImageRequestHandler(cgImage: strip, options: [:])
+            guard (try? handler.perform([request])) != nil else { continue }
+            for observation in request.results ?? [] {
+                guard let candidate = observation.topCandidates(1).first else { continue }
+                for token in rankTokens(in: candidate.string, lenient: true) {
+                    guard let box = (try? candidate.boundingBox(for: token.range))?.boundingBox else { continue }
+                    let mid = Double(box.midX) * stripWidth
+                    guard let slot = slots.first(where: { mid >= $0.minX - gap / 2 && mid <= $0.maxX + gap / 2 }),
+                          ranks[slot.index] == nil else { continue }
+                    ranks[slot.index] = token.rank
+                }
+            }
+        }
     }
 
     struct Detection {
@@ -118,7 +181,8 @@ enum OnDeviceCardReader {
     }
 
     /// 从一行文字里挑出点数字符（A K Q J 10 9…2）及其位置。
-    static func rankTokens(in text: String) -> [(range: Range<String.Index>, rank: Int)] {
+    /// lenient：拼好的点数行里，把 O / 0 认作 Q（牌角的 Q 常被认成 O）。
+    static func rankTokens(in text: String, lenient: Bool = false) -> [(range: Range<String.Index>, rank: Int)] {
         var tokens: [(range: Range<String.Index>, rank: Int)] = []
         var i = text.startIndex
         while i < text.endIndex {
@@ -132,6 +196,8 @@ enum OnDeviceCardReader {
             }
             if c != "T", let rank = Card.rank(from: c) {
                 tokens.append((i..<next, rank))
+            } else if lenient, c == "O" || c == "0" {
+                tokens.append((i..<next, 10))
             }
             i = next
         }

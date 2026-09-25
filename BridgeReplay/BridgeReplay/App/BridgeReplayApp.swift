@@ -9,6 +9,8 @@ struct BridgeReplayApp: App {
             RootView()
                 .environmentObject(store)
                 .tint(Theme.felt)
+                // 界面按浅色设计（牌面、背景都是浅色），深色模式下文字会看不见。
+                .preferredColorScheme(.light)
         }
     }
 }
