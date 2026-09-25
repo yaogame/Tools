@@ -2,3 +2,5 @@ xcuserdata/
 *.xcuserstate
 DerivedData/
 .build/
+build/
+.team_id
